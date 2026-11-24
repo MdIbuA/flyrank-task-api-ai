@@ -1,11 +1,20 @@
 """Task API: a small in-memory CRUD API built with FastAPI."""
 
 import copy
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StrictBool, StrictStr, field_validator, model_validator
+
+import db
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init_db()  # creates tasks.db + table on first run, seeds only if empty
+    yield
 
 app = FastAPI(
     title="Task API",
@@ -14,6 +23,7 @@ app = FastAPI(
         "A to-do list API with full CRUD on an in-memory list. "
         "Data is lost when the server restarts; that is intentional for this stage."
     ),
+    lifespan=lifespan,
 )
 
 # In-memory "database": lives only as long as the process does.
