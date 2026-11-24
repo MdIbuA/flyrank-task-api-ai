@@ -1,4 +1,8 @@
-"""Task API: the same CRUD API as Assignment 1, now backed by PostgreSQL (or SQLite)."""
+"""Task API: CRUD on tasks (PostgreSQL or SQLite) plus an AI triage endpoint."""
+
+from dotenv import load_dotenv
+
+load_dotenv()  # .env holds DATABASE_URL and the LLM_* settings; real env vars win
 
 from contextlib import asynccontextmanager
 
@@ -8,6 +12,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StrictBool, StrictStr, field_validator, model_validator
 
 import storage
+from routes.triage import router as triage_router
 from storage import TaskRepository, get_repo
 
 
@@ -20,10 +25,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Task API",
-    version="3.0",
+    version="4.0",
     description="A to-do list API with full CRUD. Tasks are stored in PostgreSQL (SQLite when DATABASE_URL is unset) and survive restarts.",
     lifespan=lifespan,
 )
+app.include_router(triage_router)  # registered first: POST /tasks/triage
 
 
 # ---------- Schemas ----------
@@ -104,7 +110,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 @app.get("/", tags=["meta"], summary="Describe this API")
 def root():
-    return {"name": "Task API", "version": "3.0", "endpoints": ["/tasks", "/stats", "/reset"]}
+    return {"name": "Task API", "version": "4.0", "endpoints": ["/tasks", "/tasks/triage", "/stats", "/reset"]}
 
 
 @app.get("/health", tags=["meta"], summary="Liveness check")
