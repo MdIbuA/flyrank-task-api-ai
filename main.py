@@ -3,12 +3,15 @@
 import copy
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query, Request, Response
+from collections.abc import Iterator
+
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StrictBool, StrictStr, field_validator, model_validator
 
 import db
+from repository import SqliteTaskRepository
 
 
 @asynccontextmanager
@@ -36,6 +39,16 @@ tasks: list[dict] = copy.deepcopy(SEED_TASKS)
 next_id = len(SEED_TASKS) + 1
 
 
+def get_repo() -> Iterator[SqliteTaskRepository]:
+    # One short-lived connection per request: SQLite connections are cheap
+    # and this keeps FastAPI's worker threads from sharing one.
+    conn = db.connect()
+    try:
+        yield SqliteTaskRepository(conn)
+    finally:
+        conn.close()
+
+
 # ---------- Schemas ----------
 
 def clean_title(value: str) -> str:
@@ -49,6 +62,8 @@ class Task(BaseModel):
     id: int
     title: str
     done: bool
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class TaskCreate(BaseModel):
@@ -129,14 +144,9 @@ def health():
 def list_tasks(
     done: bool | None = Query(None, description="Only finished (true) or open (false) tasks"),
     search: str | None = Query(None, description="Case-insensitive substring of the title"),
+    repo: SqliteTaskRepository = Depends(get_repo),
 ):
-    result = tasks
-    if done is not None:
-        result = [t for t in result if t["done"] == done]
-    if search:
-        needle = search.lower()
-        result = [t for t in result if needle in t["title"].lower()]
-    return result
+    return repo.list_all(done=done, search=search)
 
 
 @app.get("/stats", tags=["extras"], summary="Count total, done and open tasks")
@@ -160,8 +170,8 @@ def reset():
     tags=["tasks"],
     summary="Get one task by id",
 )
-def get_task(task_id: int):
-    task = find_task(task_id)
+def get_task(task_id: int, repo: SqliteTaskRepository = Depends(get_repo)):
+    task = repo.get(task_id)
     if task is None:
         return error(404, f"Task {task_id} not found")
     return task
