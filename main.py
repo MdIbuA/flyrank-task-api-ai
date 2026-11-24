@@ -1,6 +1,5 @@
-"""Task API: the same CRUD API as Assignment 1, now stored in SQLite."""
+"""Task API: the same CRUD API as Assignment 1, now backed by PostgreSQL (or SQLite)."""
 
-from collections.abc import Iterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Query, Request, Response
@@ -8,32 +7,23 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StrictBool, StrictStr, field_validator, model_validator
 
-import db
-from repository import SqliteTaskRepository
+import storage
+from storage import TaskRepository, get_repo
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db.init_db()  # creates tasks.db + table on first run, seeds only if empty
+    storage.init()  # Postgres if DATABASE_URL is set, else SQLite; creates the table if missing
     yield
+    storage.close()
 
 
 app = FastAPI(
     title="Task API",
-    version="2.0",
-    description="A to-do list API with full CRUD. Tasks are stored in SQLite and survive restarts.",
+    version="3.0",
+    description="A to-do list API with full CRUD. Tasks are stored in PostgreSQL (SQLite when DATABASE_URL is unset) and survive restarts.",
     lifespan=lifespan,
 )
-
-
-def get_repo() -> Iterator[SqliteTaskRepository]:
-    # One short-lived connection per request: SQLite connections are cheap
-    # and this keeps FastAPI's worker threads from sharing one.
-    conn = db.connect()
-    try:
-        yield SqliteTaskRepository(conn)
-    finally:
-        conn.close()
 
 
 # ---------- Schemas ----------
@@ -114,7 +104,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 @app.get("/", tags=["meta"], summary="Describe this API")
 def root():
-    return {"name": "Task API", "version": "2.0", "endpoints": ["/tasks", "/stats", "/reset"]}
+    return {"name": "Task API", "version": "3.0", "endpoints": ["/tasks", "/stats", "/reset"]}
 
 
 @app.get("/health", tags=["meta"], summary="Liveness check")
@@ -131,7 +121,7 @@ def health():
 def list_tasks(
     done: bool | None = Query(None, description="Only finished (true) or open (false) tasks"),
     search: str | None = Query(None, description="Case-insensitive substring of the title"),
-    repo: SqliteTaskRepository = Depends(get_repo),
+    repo: TaskRepository = Depends(get_repo),
 ):
     return repo.list_all(done=done, search=search)
 
@@ -143,7 +133,7 @@ def list_tasks(
     tags=["tasks"],
     summary="Get one task by id",
 )
-def get_task(task_id: int, repo: SqliteTaskRepository = Depends(get_repo)):
+def get_task(task_id: int, repo: TaskRepository = Depends(get_repo)):
     task = repo.get(task_id)
     return task if task else not_found(task_id)
 
@@ -156,7 +146,7 @@ def get_task(task_id: int, repo: SqliteTaskRepository = Depends(get_repo)):
     tags=["tasks"],
     summary="Create a task",
 )
-def create_task(payload: TaskCreate, repo: SqliteTaskRepository = Depends(get_repo)):
+def create_task(payload: TaskCreate, repo: TaskRepository = Depends(get_repo)):
     return repo.create(payload.title)
 
 
@@ -167,7 +157,7 @@ def create_task(payload: TaskCreate, repo: SqliteTaskRepository = Depends(get_re
     tags=["tasks"],
     summary="Update a task's title and/or done flag",
 )
-def update_task(task_id: int, payload: TaskUpdate, repo: SqliteTaskRepository = Depends(get_repo)):
+def update_task(task_id: int, payload: TaskUpdate, repo: TaskRepository = Depends(get_repo)):
     task = repo.update(task_id, title=payload.title, done=payload.done)
     return task if task else not_found(task_id)
 
@@ -179,17 +169,17 @@ def update_task(task_id: int, payload: TaskUpdate, repo: SqliteTaskRepository = 
     tags=["tasks"],
     summary="Delete a task",
 )
-def delete_task(task_id: int, repo: SqliteTaskRepository = Depends(get_repo)):
+def delete_task(task_id: int, repo: TaskRepository = Depends(get_repo)):
     if not repo.delete(task_id):
         return not_found(task_id)
     return Response(status_code=204)
 
 
 @app.get("/stats", tags=["extras"], summary="Count total, done and open tasks with SQL COUNT()")
-def stats(repo: SqliteTaskRepository = Depends(get_repo)):
+def stats(repo: TaskRepository = Depends(get_repo)):
     return repo.stats()
 
 
 @app.post("/reset", response_model=list[Task], tags=["extras"], summary="Delete everything and restore the 3 example tasks")
-def reset(repo: SqliteTaskRepository = Depends(get_repo)):
+def reset(repo: TaskRepository = Depends(get_repo)):
     return repo.reset()

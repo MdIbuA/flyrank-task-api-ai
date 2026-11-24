@@ -1,21 +1,38 @@
 """API behaviour must match Assignment 1, plus data must survive a restart.
 
-Each test gets its own throwaway database file. Run: pytest -q
+Every test runs against SQLite (a throwaway file) and, when TEST_DATABASE_URL
+points at a Postgres database, against Postgres too. That database is wiped.
+Run: pytest -q
 """
 
 import importlib
+import os
 
 import pytest
 from fastapi.testclient import TestClient
 
 
-@pytest.fixture()
-def app_module(tmp_path, monkeypatch):
-    monkeypatch.setenv("TASKS_DB", str(tmp_path / "test.db"))
+PG_URL = os.getenv("TEST_DATABASE_URL")
+BACKENDS = ["sqlite", pytest.param("postgres", marks=pytest.mark.skipif(not PG_URL, reason="set TEST_DATABASE_URL"))]
+
+
+@pytest.fixture(params=BACKENDS)
+def app_module(request, tmp_path, monkeypatch):
+    if request.param == "postgres":
+        import psycopg
+
+        with psycopg.connect(PG_URL, autocommit=True) as conn:
+            conn.execute("DROP TABLE IF EXISTS tasks")  # fresh table, re-created and seeded on startup
+        monkeypatch.setenv("DATABASE_URL", PG_URL)
+    else:
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.setenv("TASKS_DB", str(tmp_path / "test.db"))
     import db
     import main
+    import storage
 
     importlib.reload(db)  # pick up the new TASKS_DB path
+    importlib.reload(storage)
     importlib.reload(main)
     return main
 
@@ -26,10 +43,9 @@ def client(app_module):
         yield c
 
 
-def test_database_file_is_created_and_seeded_once(tmp_path, app_module):
+def test_database_is_created_and_seeded_once(app_module):
     with TestClient(app_module.app) as c:
         assert len(c.get("/tasks").json()) == 3
-    assert (tmp_path / "test.db").exists()
     with TestClient(app_module.app) as c:  # second "run" of the server
         assert len(c.get("/tasks").json()) == 3  # not 6
 
