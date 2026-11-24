@@ -37,3 +37,8 @@ class SqliteTaskRepository:
     def get(self, task_id: int) -> dict | None:
         row = self.conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         return _to_task(row) if row else None
+
+    def create(self, title: str) -> dict:
+        cur = self.conn.execute("INSERT INTO tasks (title) VALUES (?)", (title,))
+        self.conn.commit()
+        return self.get(cur.lastrowid)

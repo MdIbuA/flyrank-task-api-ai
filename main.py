@@ -185,12 +185,8 @@ def get_task(task_id: int, repo: SqliteTaskRepository = Depends(get_repo)):
     tags=["tasks"],
     summary="Create a task",
 )
-def create_task(payload: TaskCreate):
-    global next_id
-    task = {"id": next_id, "title": payload.title, "done": False}
-    next_id += 1
-    tasks.append(task)
-    return task
+def create_task(payload: TaskCreate, repo: SqliteTaskRepository = Depends(get_repo)):
+    return repo.create(payload.title)
 
 
 @app.put(
