@@ -12,7 +12,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -21,7 +21,7 @@ from llm import client
 from llm.schema import STUB_RESULT, TriageResult
 
 ROOT = Path(__file__).resolve().parent.parent
-PROMPT_VERSION = "triage-v1"
+PROMPT_VERSION = "triage-v2"
 PROMPT_FILE = ROOT / "prompts" / f"{PROMPT_VERSION}.md"
 LOG_DIR = Path(os.getenv("LLM_LOG_DIR", ROOT / "logs"))
 
@@ -44,10 +44,13 @@ def system_prompt() -> str:
     return PROMPT_FILE.read_text(encoding="utf-8")
 
 
-def user_message(text: str) -> dict:
+def user_message(text: str, today: date | None = None) -> dict:
     # The note goes in its own user message, JSON-encoded, never pasted into the
     # system prompt: it may contain instructions we must not follow.
-    return {"role": "user", "content": json.dumps({"note": text}, ensure_ascii=False)}
+    # v2: today's date is included, or "on 3rd dec" can't be ranked against "tomorrow".
+    today = today or date.today()
+    return {"role": "user", "content": json.dumps(
+        {"note": text, "today": today.strftime("%Y-%m-%d (%A)")}, ensure_ascii=False)}
 
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)

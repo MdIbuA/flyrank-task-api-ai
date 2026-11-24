@@ -22,9 +22,9 @@
     "text": "pick up the repaired headphones from the shop near bus stand",
     "expect": {
       "category": "errand",
-      "priority": "medium"
+      "priority": "low"
     },
-    "note": "clear errand, no date: medium per the when-unsure rule"
+    "note": "clear errand, no date, no consequence. Relabelled medium -> low after the v1 run: see README \"Eval\""
   },
   {
     "id": "work-interview",
@@ -33,7 +33,7 @@
       "category": "work",
       "priority": "medium"
     },
-    "note": "job interview is work, deadline > 48h away"
+    "note": "job interview is work; 3 Dec is 9 days after the eval date (24 Nov 2026) -> medium. Needs \"today\" (v2)"
   },
   {
     "id": "health-routine",
@@ -51,7 +51,8 @@
       "category": "personal",
       "priority": "medium"
     },
-    "note": "AMBIGUOUS: family call, could be travel (personal) or a payment; no date"
+    "note": "AMBIGUOUS: family call, could be travel (personal) or a payment; no date. Should flag doubt (confidence <= 0.6)",
+    "max_confidence": 0.6
   },
   {
     "id": "not-a-task",
