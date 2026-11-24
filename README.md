@@ -1,96 +1,81 @@
-# Task API + SQLite
+# Task API + PostgreSQL in Docker
 
-The same to-do CRUD API as [Assignment 1](https://github.com/MdIbuA/flyrank-task-api), but tasks are now stored in a **SQLite** database instead of a Python list. The URLs, request bodies and responses are unchanged; only the storage layer moved. The difference you can see is that **data now survives a server restart**.
+The Task API from [A1](https://github.com/MdIbuA/flyrank-task-api) and [A2](https://github.com/MdIbuA/flyrank-task-api-sqlite), now running on **PostgreSQL in Docker**. One command starts the app and the database together, and the data lives in a Docker volume, so it survives restarts of both.
 
-Built for FlyRank's Backend AI Engineering track, assignment **A2: Connecting to the database** (Python lane: FastAPI + the standard-library `sqlite3` module).
+Built for FlyRank's Backend AI Engineering track, assignment **A3: Containerize your stack** (Python: FastAPI + psycopg 3).
 
-![The tasks table in a SQLite viewer](docs/db-viewer.png)
+## Run the whole stack
 
-## Run it
-
-Requires Python 3.10+.
+Requires Docker Desktop (or Docker Engine with Compose v2).
 
 ```bash
-pip install -r requirements.txt
-uvicorn main:app --reload
+cp .env.example .env        # then change POSTGRES_PASSWORD in .env
+docker compose up --build
 ```
 
-On the first start the app creates `tasks.db` next to `main.py`, creates the `tasks` table, and inserts three example tasks. Later starts find the table already filled and insert nothing. Swagger UI is at <http://localhost:8000/docs>.
+- API: <http://localhost:8000>, Swagger UI at <http://localhost:8000/docs>
+- Postgres: `localhost:5432`, with the user, password and database from your `.env`
 
-Tests (11, each on its own throwaway database): `pip install -r requirements-dev.txt && pytest -q`
+`docker compose down` stops everything and keeps the data. `docker compose down -v` also deletes the volume, which wipes the data.
 
-## Why SQLite
+## What's in the stack
 
-- **Zero setup.** No server to install or run; the whole database is one file, and Python ships with the driver (`sqlite3`).
-- **Real SQL.** It's a proper relational database with tables, types, constraints and transactions, so the queries here carry over to PostgreSQL almost unchanged.
-- **Right size.** One process, one user, a few thousand rows: exactly what SQLite is built for. A3 moves to Postgres when there's a reason to (several app instances, concurrent writers, a separate DB server).
+| Piece | File | Notes |
+|---|---|---|
+| Postgres 16 | `docker-compose.yml` → `db` | Named volume `pgdata` holds the data. A healthcheck (`pg_isready`) tells Compose when it's ready. |
+| Schema | `sql/init.sql` | One SQL file: the `tasks` table plus three example rows, inserted only if the table is empty. Postgres runs it the first time the volume is created, and the app runs it again on startup; every statement is safe to repeat. |
+| App | `Dockerfile` + `docker-compose.yml` → `app` | `python:3.12-slim`, runs as a non-root user, starts only after the database is healthy. |
+| Secrets | `.env` (gitignored), `.env.example` (committed) | The connection string is built from `.env`; nothing secret is in the repo. |
 
-## Where the data lives
+## The swap: what changed and what didn't
 
-`tasks.db`, in the project folder (next to `main.py`). Set the `TASKS_DB` environment variable to use a different file. The file is in `.gitignore`: the database is created on first run, so it doesn't belong in the repo.
+A2 put every SQL query behind a repository class. A3 adds a second class with the same seven methods and switches to it:
 
-Schema (`db.py`):
-
-```sql
-CREATE TABLE IF NOT EXISTS tasks (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT    NOT NULL CHECK (length(trim(title)) > 0),
-    done       BOOLEAN NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
-    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
-```
-
-`AUTOINCREMENT` means a deleted id is never handed out again, which matches Assignment 1's behaviour.
-
-## How the code is split
-
-| File | Job |
+| File | Status |
 |---|---|
-| `main.py` | HTTP layer: routes, validation, status codes. Contains no SQL. |
-| `repository.py` | `SqliteTaskRepository`: every SQL query lives here (`list_all`, `get`, `create`, `update`, `delete`, `stats`, `reset`). |
-| `db.py` | Where the file is, the schema, and first-run setup. |
+| `repository_postgres.py` | **New.** `PostgresTaskRepository`: same methods and return shapes as the SQLite one. |
+| `storage.py` | **New.** Reads `DATABASE_URL` once at startup. If it's set: open a psycopg connection pool, apply `sql/init.sql`, hand out `PostgresTaskRepository`. If not: fall back to A2's SQLite file. |
+| `main.py` | **Routes unchanged.** Every route body is identical to A2. Honest list of the edits: the startup hook calls `storage.init()`/`storage.close()` instead of `db.init_db()`; `get_repo` is now imported from `storage.py` instead of defined in `main.py`; the type hint on the `repo` parameter is a `TaskRepository` protocol instead of the SQLite class; and the version string is 3.0. |
+| `repository.py`, `db.py` | Unchanged from A2. |
 
-Routes get a repository through FastAPI's `Depends(get_repo)`, which opens one connection per request and closes it afterwards. Every query uses `?` placeholders, so user input is never pasted into SQL.
+The client-facing API is byte-for-byte the same, including error messages and timestamp format. The test suite proves it: the same 11 tests run against both backends.
 
-## Endpoints
-
-Same as Assignment 1. Every task now also carries `created_at` and `updated_at`.
-
-| Method | Path | Success | Errors |
-|---|---|---|---|
-| GET | `/tasks` (optional `?done=` and `?search=`) | 200 | 400 |
-| GET | `/tasks/{id}` | 200 | 404, 400 |
-| POST | `/tasks` | 201 | 400 |
-| PUT | `/tasks/{id}` | 200 | 404, 400 |
-| DELETE | `/tasks/{id}` | 204 | 404 |
-| GET | `/stats` | 200 | |
-| POST | `/reset` | 200 | |
-
-## Example SQL I ran
-
-```sql
--- Completed tasks only
-SELECT * FROM tasks WHERE done = 1;
+```bash
+pip install -r requirements-dev.txt
+pytest -q                                                             # SQLite only
+TEST_DATABASE_URL=postgresql://tasks:change-me@localhost:5432/tasks pytest -q   # both (wipes that database)
 ```
 
-All five Stage 4 queries, with their output and how the API responded straight afterwards, are in [docs/sql-session.md](docs/sql-session.md). The queries are also in [queries.sql](queries.sql) so you can run them yourself in [DB Browser for SQLite](https://sqlitebrowser.org/) or any SQLite viewer.
+Against Postgres 16: **22 passed** (11 tests × 2 backends).
 
-## Proving it persists
+## Proving persistence
 
-1. Create a task: `curl -i -X POST http://localhost:8000/tasks -H "Content-Type: application/json" -d '{"title": "Buy milk"}'`
-2. Stop the server (Ctrl+C) and start it again.
-3. `curl http://localhost:8000/tasks`: "Buy milk" is still there, and the three example tasks were not inserted a second time.
+What I did, against Postgres 16:
 
-The test suite checks both of these automatically (`test_data_survives_restart`, `test_database_file_is_created_and_seeded_once`).
+1. Started the app with `DATABASE_URL` pointing at Postgres and created a task:
+   `POST /tasks {"title": "Survive a restart"}` → `201`, id 4.
+2. Stopped the app **and** restarted the Postgres server.
+3. Started the app again: `GET /tasks/4` returned the same task with the same `created_at`, and `/stats` showed 4 tasks (the 3 examples weren't inserted twice).
 
-## Optional extras done
+Repeat it with Compose:
 
-- `?search=` uses SQL `LIKE`, with `%` and `_` escaped so they're matched literally.
-- `?done=true` is a SQL `WHERE` clause.
-- `/stats` uses `COUNT(*)` and `SUM(done)` in SQL instead of counting in Python.
-- `created_at` / `updated_at` timestamps on every task.
+```bash
+docker compose up -d --build
+curl -X POST localhost:8000/tasks -H "Content-Type: application/json" -d '{"title": "Survive a restart"}'
+docker compose restart          # restarts the app AND the db containers
+curl localhost:8000/tasks       # still there
+docker compose down && docker compose up -d   # containers deleted and recreated; volume kept
+curl localhost:8000/tasks       # still there
+```
 
-## What I noticed
+## Postgres-specific details
 
-The API layer hardly changed. Each route went from touching a list to calling one repository method, and clients can't tell the difference. Writing straight to the file with SQL showed up in the API immediately, because the API holds no copy of the data anymore; the database is the single source of truth.
+- `id` is `GENERATED ALWAYS AS IDENTITY`: the modern replacement for `SERIAL`, and ids are never reused.
+- Partial updates use `COALESCE(%s, title)`, so one `UPDATE ... RETURNING *` handles "title only", "done only" or both, without building SQL strings.
+- `?search=` uses `ILIKE` with `%` and `_` escaped; `/stats` uses `COUNT(*) FILTER (WHERE done)`.
+- A connection pool (`psycopg_pool`, max 10) replaces the open-a-connection-per-request approach from A2. Opening a Postgres connection is far more expensive than opening a SQLite file.
+- Every query is parameterised (`%s`); user input never becomes part of the SQL text.
+
+## Run without Docker
+
+`uvicorn main:app --reload` still works with no `DATABASE_URL`: it uses the A2 SQLite file. Set `DATABASE_URL` to use any Postgres you already have.
