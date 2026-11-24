@@ -1,10 +1,10 @@
-# Task API
+# Task API + SQLite
 
-A small REST API for a to-do list, built with **FastAPI**. It supports full CRUD (create, read, update, delete) on tasks held **in memory**: there is no database yet, so every restart brings back the three example tasks and loses everything else.
+The same to-do CRUD API as [Assignment 1](https://github.com/MdIbuA/flyrank-task-api), but tasks are now stored in a **SQLite** database instead of a Python list. The URLs, request bodies and responses are unchanged; only the storage layer moved. The difference you can see is that **data now survives a server restart**.
 
-Built for FlyRank's Backend AI Engineering track, assignment **BE-01: Build your first CRUD API** (Python lane).
+Built for FlyRank's Backend AI Engineering track, assignment **A2: Connecting to the database** (Python lane: FastAPI + the standard-library `sqlite3` module).
 
-![Swagger UI showing every endpoint](docs/swagger-ui.png)
+![The tasks table in a SQLite viewer](docs/db-viewer.png)
 
 ## Run it
 
@@ -15,74 +15,82 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-That's the one command after installing. The API runs at <http://localhost:8000>. Interactive docs (Swagger UI) are at <http://localhost:8000/docs>.
+On the first start the app creates `tasks.db` next to `main.py`, creates the `tasks` table, and inserts three example tasks. Later starts find the table already filled and insert nothing. Swagger UI is at <http://localhost:8000/docs>.
 
-Run the tests (17 checks covering every status code) with:
+Tests (11, each on its own throwaway database): `pip install -r requirements-dev.txt && pytest -q`
 
-```bash
-pip install -r requirements-dev.txt
-pytest -q
+## Why SQLite
+
+- **Zero setup.** No server to install or run; the whole database is one file, and Python ships with the driver (`sqlite3`).
+- **Real SQL.** It's a proper relational database with tables, types, constraints and transactions, so the queries here carry over to PostgreSQL almost unchanged.
+- **Right size.** One process, one user, a few thousand rows: exactly what SQLite is built for. A3 moves to Postgres when there's a reason to (several app instances, concurrent writers, a separate DB server).
+
+## Where the data lives
+
+`tasks.db`, in the project folder (next to `main.py`). Set the `TASKS_DB` environment variable to use a different file. The file is in `.gitignore`: the database is created on first run, so it doesn't belong in the repo.
+
+Schema (`db.py`):
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT    NOT NULL CHECK (length(trim(title)) > 0),
+    done       BOOLEAN NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
 ```
+
+`AUTOINCREMENT` means a deleted id is never handed out again, which matches Assignment 1's behaviour.
+
+## How the code is split
+
+| File | Job |
+|---|---|
+| `main.py` | HTTP layer: routes, validation, status codes. Contains no SQL. |
+| `repository.py` | `SqliteTaskRepository`: every SQL query lives here (`list_all`, `get`, `create`, `update`, `delete`, `stats`, `reset`). |
+| `db.py` | Where the file is, the schema, and first-run setup. |
+
+Routes get a repository through FastAPI's `Depends(get_repo)`, which opens one connection per request and closes it afterwards. Every query uses `?` placeholders, so user input is never pasted into SQL.
 
 ## Endpoints
 
-| Method | Path | What it does | Success | Errors |
-|---|---|---|---|---|
-| GET | `/` | Name, version and endpoints of this API | 200 | |
-| GET | `/health` | Liveness check, returns `{"status": "ok"}` | 200 | |
-| GET | `/tasks` | List all tasks. Optional `?done=true\|false` and `?search=text` | 200 | 400 bad query value |
-| GET | `/tasks/{id}` | Get one task | 200 | 404 unknown id, 400 non-numeric id |
-| POST | `/tasks` | Create a task from `{"title": "..."}` | 201 | 400 missing or empty title |
-| PUT | `/tasks/{id}` | Change `title` and/or `done` | 200 | 404 unknown id, 400 invalid body |
-| DELETE | `/tasks/{id}` | Remove a task | 204 | 404 unknown id |
-| GET | `/stats` | `{"total", "done", "open"}` counts | 200 | |
-| POST | `/reset` | Restore the three example tasks | 200 | |
+Same as Assignment 1. Every task now also carries `created_at` and `updated_at`.
 
-Every error is JSON with one readable message, for example `{"error": "Task 99 not found"}`.
+| Method | Path | Success | Errors |
+|---|---|---|---|
+| GET | `/tasks` (optional `?done=` and `?search=`) | 200 | 400 |
+| GET | `/tasks/{id}` | 200 | 404, 400 |
+| POST | `/tasks` | 201 | 400 |
+| PUT | `/tasks/{id}` | 200 | 404, 400 |
+| DELETE | `/tasks/{id}` | 204 | 404 |
+| GET | `/stats` | 200 | |
+| POST | `/reset` | 200 | |
 
-## Try it with curl
+## Example SQL I ran
 
-```bash
-# Read
-curl -i http://localhost:8000/tasks
-curl -i http://localhost:8000/tasks/1          # 200 + one task
-curl -i http://localhost:8000/tasks/99         # 404 + {"error": "Task 99 not found"}
-
-# Create
-curl -i -X POST http://localhost:8000/tasks \
-  -H "Content-Type: application/json" -d '{"title": "Buy milk"}'      # 201
-curl -i -X POST http://localhost:8000/tasks \
-  -H "Content-Type: application/json" -d '{"title": ""}'             # 400
-
-# Update, then mark done
-curl -i -X PUT http://localhost:8000/tasks/4 \
-  -H "Content-Type: application/json" -d '{"title": "Buy oat milk"}'  # 200
-curl -i -X PUT http://localhost:8000/tasks/4 \
-  -H "Content-Type: application/json" -d '{"done": true}'             # 200
-
-# Delete, then confirm it's gone
-curl -i -X DELETE http://localhost:8000/tasks/4                       # 204
-curl -i http://localhost:8000/tasks/4                                 # 404
-
-# Extras
-curl -i "http://localhost:8000/tasks?done=true"
-curl -i "http://localhost:8000/tasks?search=milk"
-curl -i http://localhost:8000/stats
+```sql
+-- Completed tasks only
+SELECT * FROM tasks WHERE done = 1;
 ```
 
-## Swagger UI
+All five Stage 4 queries, with their output and how the API responded straight afterwards, are in [docs/sql-session.md](docs/sql-session.md). The queries are also in [queries.sql](queries.sql) so you can run them yourself in [DB Browser for SQLite](https://sqlitebrowser.org/) or any SQLite viewer.
 
-Open `/docs`, expand an endpoint, click **Try it out**, then **Execute**. The full create → list → update → delete cycle works from there without curl.
+## Proving it persists
 
-![Creating a task from Swagger UI](docs/swagger-try-it-out.png)
+1. Create a task: `curl -i -X POST http://localhost:8000/tasks -H "Content-Type: application/json" -d '{"title": "Buy milk"}'`
+2. Stop the server (Ctrl+C) and start it again.
+3. `curl http://localhost:8000/tasks`: "Buy milk" is still there, and the three example tasks were not inserted a second time.
 
-## Design decisions
+The test suite checks both of these automatically (`test_data_survives_restart`, `test_database_file_is_created_and_seeded_once`).
 
-- **400, not 422, for bad input.** FastAPI's default for a failed validation is 422. The brief asks for 400 Bad Request, so a custom handler turns any validation failure into `400` with a single `{"error": ...}` message. (Swagger still lists FastAPI's automatic 422 schema; the API itself never sends it.)
-- **Strict types.** `title` must be a string and `done` must be a real boolean, so `{"title": 123}` or `{"done": "yes"}` are rejected instead of silently converted. Titles are trimmed, so `"   "` counts as empty.
-- **PUT needs at least one field.** An empty body `{}` is a 400, not a silent no-op.
-- **Ids are never reused.** A counter hands out ids, so deleting task 4 and creating a new task gives id 5, not 4 again. Reusing ids would let an old link point at a different task.
+## Optional extras done
 
-## The mortality experiment
+- `?search=` uses SQL `LIKE`, with `%` and `_` escaped so they're matched literally.
+- `?done=true` is a SQL `WHERE` clause.
+- `/stats` uses `COUNT(*)` and `SUM(done)` in SQL instead of counting in Python.
+- `created_at` / `updated_at` timestamps on every task.
 
-Create a few tasks, stop the server with Ctrl+C, start it again and call `GET /tasks`: only the three example tasks come back. The list lives in the Python process's memory, so when the process stops the data stops with it. That's the problem the next assignment fixes with a database.
+## What I noticed
+
+The API layer hardly changed. Each route went from touching a list to calling one repository method, and clients can't tell the difference. Writing straight to the file with SQL showed up in the API immediately, because the API holds no copy of the data anymore; the database is the single source of truth.
