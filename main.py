@@ -1,9 +1,7 @@
-"""Task API: a small in-memory CRUD API built with FastAPI."""
-
-import copy
-from contextlib import asynccontextmanager
+"""Task API: the same CRUD API as Assignment 1, now stored in SQLite."""
 
 from collections.abc import Iterator
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -19,24 +17,13 @@ async def lifespan(app: FastAPI):
     db.init_db()  # creates tasks.db + table on first run, seeds only if empty
     yield
 
+
 app = FastAPI(
     title="Task API",
-    version="1.0",
-    description=(
-        "A to-do list API with full CRUD on an in-memory list. "
-        "Data is lost when the server restarts; that is intentional for this stage."
-    ),
+    version="2.0",
+    description="A to-do list API with full CRUD. Tasks are stored in SQLite and survive restarts.",
     lifespan=lifespan,
 )
-
-# In-memory "database": lives only as long as the process does.
-SEED_TASKS = [
-    {"id": 1, "title": "Read the FastAPI first-steps guide", "done": True},
-    {"id": 2, "title": "Build the read endpoints", "done": False},
-    {"id": 3, "title": "Push the repo to GitHub", "done": False},
-]
-tasks: list[dict] = copy.deepcopy(SEED_TASKS)
-next_id = len(SEED_TASKS) + 1
 
 
 def get_repo() -> Iterator[SqliteTaskRepository]:
@@ -62,8 +49,8 @@ class Task(BaseModel):
     id: int
     title: str
     done: bool
-    created_at: str | None = None
-    updated_at: str | None = None
+    created_at: str
+    updated_at: str
 
 
 class TaskCreate(BaseModel):
@@ -103,14 +90,14 @@ NOT_FOUND = {404: {"model": ErrorMessage, "description": "No task with that id"}
 BAD_REQUEST = {400: {"model": ErrorMessage, "description": "Invalid request body or id"}}
 
 
-# ---------- Helpers ----------
+# ---------- Errors ----------
 
 def error(status: int, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": message})
 
 
-def find_task(task_id: int) -> dict | None:
-    return next((t for t in tasks if t["id"] == task_id), None)
+def not_found(task_id: int) -> JSONResponse:
+    return error(404, f"Task {task_id} not found")
 
 
 @app.exception_handler(RequestValidationError)
@@ -127,7 +114,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 @app.get("/", tags=["meta"], summary="Describe this API")
 def root():
-    return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks", "/stats", "/reset"]}
+    return {"name": "Task API", "version": "2.0", "endpoints": ["/tasks", "/stats", "/reset"]}
 
 
 @app.get("/health", tags=["meta"], summary="Liveness check")
@@ -149,20 +136,6 @@ def list_tasks(
     return repo.list_all(done=done, search=search)
 
 
-@app.get("/stats", tags=["extras"], summary="Count total, done and open tasks")
-def stats():
-    done_count = sum(1 for t in tasks if t["done"])
-    return {"total": len(tasks), "done": done_count, "open": len(tasks) - done_count}
-
-
-@app.post("/reset", response_model=list[Task], tags=["extras"], summary="Restore the 3 example tasks")
-def reset():
-    global tasks, next_id
-    tasks = copy.deepcopy(SEED_TASKS)
-    next_id = len(SEED_TASKS) + 1
-    return tasks
-
-
 @app.get(
     "/tasks/{task_id}",
     response_model=Task,
@@ -172,9 +145,7 @@ def reset():
 )
 def get_task(task_id: int, repo: SqliteTaskRepository = Depends(get_repo)):
     task = repo.get(task_id)
-    if task is None:
-        return error(404, f"Task {task_id} not found")
-    return task
+    return task if task else not_found(task_id)
 
 
 @app.post(
@@ -196,15 +167,9 @@ def create_task(payload: TaskCreate, repo: SqliteTaskRepository = Depends(get_re
     tags=["tasks"],
     summary="Update a task's title and/or done flag",
 )
-def update_task(task_id: int, payload: TaskUpdate):
-    task = find_task(task_id)
-    if task is None:
-        return error(404, f"Task {task_id} not found")
-    if payload.title is not None:
-        task["title"] = payload.title
-    if payload.done is not None:
-        task["done"] = payload.done
-    return task
+def update_task(task_id: int, payload: TaskUpdate, repo: SqliteTaskRepository = Depends(get_repo)):
+    task = repo.update(task_id, title=payload.title, done=payload.done)
+    return task if task else not_found(task_id)
 
 
 @app.delete(
@@ -214,9 +179,17 @@ def update_task(task_id: int, payload: TaskUpdate):
     tags=["tasks"],
     summary="Delete a task",
 )
-def delete_task(task_id: int):
-    task = find_task(task_id)
-    if task is None:
-        return error(404, f"Task {task_id} not found")
-    tasks.remove(task)
+def delete_task(task_id: int, repo: SqliteTaskRepository = Depends(get_repo)):
+    if not repo.delete(task_id):
+        return not_found(task_id)
     return Response(status_code=204)
+
+
+@app.get("/stats", tags=["extras"], summary="Count total, done and open tasks with SQL COUNT()")
+def stats(repo: SqliteTaskRepository = Depends(get_repo)):
+    return repo.stats()
+
+
+@app.post("/reset", response_model=list[Task], tags=["extras"], summary="Delete everything and restore the 3 example tasks")
+def reset(repo: SqliteTaskRepository = Depends(get_repo)):
+    return repo.reset()
